@@ -1,0 +1,30 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import moviemaker
+
+var Rregion = 2
+var Rmembrane = 1
+
+// Defining a circular domain (Isotropic Fluid) with a smaller circular selection space (Colloidal Membrane)
+
+var doma = CircularDomain(Matrix([0,0]), Rregion)
+var domb_plus = CircularDomain(Matrix([0,0]), Rmembrane+0.1)
+var domb = CircularDomain(Matrix([0,0]), Rmembrane)
+var mgb = MeshGen(domb, [-2*Rregion..2*Rregion:0.1, -Rregion..Rregion:0.1], quiet=false)
+var doma_b = doma.difference(domb_plus)
+var mga_b = MeshGen(doma_b, [-2*Rregion..2*Rregion:0.1, -Rregion..Rregion:0.1], quiet=false)
+var mesha_b = mga_b.build()
+var meshb = mgb.build()
+
+var merge = MeshMerge([mesha_b, meshb]) 
+var mesh = merge.merge()
+
+var mesh = ChangeMeshDimension(mesh, 3)
+
+var col = Selection(mesh, fn(x,y,z) sqrt(x^2 + y^2) < Rmembrane + 0.01)
+var bnd = Selection(mesh, fn(x,y,z) sqrt(x^2 + y^2) > Rmembrane - 0.01 and sqrt(x^2 + y^2) < Rmembrane + 0.01  )
+
+Show(plotselection(mesh, col, grade = [0,1]))
+Show(plotselection(mesh, bnd, grade = [0,1]))

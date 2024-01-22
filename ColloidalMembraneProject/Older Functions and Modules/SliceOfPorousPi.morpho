@@ -1,0 +1,285 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import moviemaker
+import vtk
+
+var K = 1
+var C = 1
+var q = 1.25
+var Hregion = 3
+var Lregion = 12
+var Rpore = 0.5
+var gamma = 0.21
+var Grain = 0.2
+
+
+var rect = RectangularDomain([-Lregion/2..Lregion/2, -Hregion/2..Hregion/2])
+var pore = CircularDomain(Matrix([0,0]), Rpore)
+var dom = rect.difference(pore)
+var mg = MeshGen(dom, [-Lregion/2..Lregion/2:Grain, -Hregion/2..Hregion/2:Grain])
+var meshe = mg.build()
+var mesh = ChangeMeshDimension(meshe, 3)
+var memb = Selection(mesh, fn(x,y,z) abs(x)<=Lregion/2+0.01 and abs(y)<=Hregion/2+0.01)
+var LeftWall = Selection(mesh, fn(x,y,z) x <= -Lregion/2 + 0.01)
+var RightWall = Selection(mesh, fn(x,y,z) x >= Lregion/2 - 0.01)
+var LowerWall = Selection(mesh, fn(x,y,z) y <= -Hregion/2 + 0.01)
+var UpperWall = Selection(mesh, fn(x,y,z) y >= Hregion/2 - 0.01)
+var bnds = Selection(mesh, boundary=true)
+var inner = Selection(mesh, fn(x,y,z) abs(x)<Lregion/2 and abs(y)<Hregion/2)
+var porebnd = bnds.intersection(inner)
+
+mesh.addgrade(1)
+mesh.addgrade(2)
+porebnd.addgrade(1)
+
+
+memb.addgrade(1)
+memb.addgrade(2)
+bnds.addgrade(1)
+LeftWall.addgrade(1)
+RightWall.addgrade(1)
+UpperWall.addgrade(1)
+LowerWall.addgrade(1)
+
+// Show(plotselection(mesh, porebnd, grade = [0,1]))
+// Show(plotselection(mesh, LeftWall, grade = [0,1]))
+
+// Helper functions to visualize the director field 
+fn visdirector(m, n, scale) {
+    var g = Graphics() 
+    for (id in 0...m.count()) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+fn visdirectorselected(m, n, s, scale) {
+    var g = Graphics() 
+    var points = s.idlistforgrade(0)
+    for (id in points) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+
+fn visverticalselected(n, nz, s) {
+    var points = s.idlistforgrade(0)
+    for (id in points) {
+        nz[0,id] =n[0,id]         // Get the corresponding director  
+    }
+    return 
+} 
+
+fn Matrix_Morpho2Mathematica(data,str) {
+    if (ismatrix(data)){
+        print(String("\n",str," = "))
+        var size = data.dimensions()
+        print("{")
+        for (i in 0..size[0]-1){
+            if(i>0){print(",")}
+            print("{")
+            for (j in 0..size[1]-1){
+                if(j>0){print(",")}
+                print(String(data[i,j]))
+                }
+            print("}")
+            }
+        print("}\n")
+        }
+    return 
+}
+
+fn FieldOnLine(m, s, n, start, end, numpts) {
+    var N = m.count(0)
+    var pts = []
+    var ValueMatrix = Matrix(numpts+1,2)
+    for (id in 0..N-1) {
+        pts.append(m.vertexposition(id))
+    }
+    var kpts = KDTree(pts)
+    var step = (end-start)/numpts
+    for (i in 0..numpts) {
+        var pt = kpts.nearest(Matrix([i*step + start, 0,0]))
+        var nvalue = 0
+        var Ptpos = 0
+            for (id in 0..N-1) {
+                if (pts[id] == pt.location && s.isselected(0, id)) {
+                    nvalue = n[0,id].inner(Matrix([0,0,1]))
+                    Ptpos = pts[id].inner(Matrix([1,0,0]))
+                    break
+                }
+            }
+        ValueMatrix[i,0] = (Ptpos); ValueMatrix[i,1] =  acos(nvalue)
+    }
+    return ValueMatrix
+}
+
+// //Initialize a field
+var nn = Field(mesh, fn(x,y,z) Matrix([0,sin(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(Lregion/2*sqrt(C/K))),cos(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(Lregion/2*sqrt(C/K)))])) 
+// var nn = Field(mesh, fn(x,y,z) Matrix([0,sin(Pi/Lregion*(x-Lregion/2)),cos(Pi/Lregion*(x-Lregion/2))]))  
+
+// Create an OptimizationProblem with our mesh as the target
+var problem=OptimizationProblem(mesh) 
+
+// Add a nematic energy functional 
+var nem = Nematic(nn, ksplay = K, ktwist = K, kbend = K, pitch = q)
+problem.addenergy(nem, selection = memb)
+
+problem.energy
+
+// Add a tilt energy functional C/2*sin^2(theta)
+fn tIntegrand(x, n) {                   
+    return 1-(n[2])^2
+}
+var tilt = AreaIntegral(tIntegrand, nn) 
+problem.addenergy(tilt, selection = memb, prefactor = C/2)
+
+// Add a level set to keep things in the z axis
+var lcons = ScalarPotential(fn (x,y,z) z)                     
+problem.addlocalconstraint(lcons)
+
+// Add a functional to penalize nx
+var xcon = LineIntegral(fn (x, n) n[0]^2, nn)
+problem.addenergy(xcon, selection = UpperWall, prefactor = 100)
+problem.addenergy(xcon, selection = LowerWall, prefactor = 100)
+
+// var nxc = Field(mesh, fn(x,y,z) Matrix([0,0,0])) // extract x component, plot as density
+// visverticalselected(nn, nxc, memb)
+// nxc = nxc.op(fn (n) abs(n[0]))
+
+// var lxc = NormSq(nxc)                      
+// problem.addlocalconstraint(lxc, field=nxc, target=0) 
+
+// Add a line tension functional
+fn lIntegrand(x){
+    return (gamma)
+}
+var lten = LineIntegral(lIntegrand)
+problem.addenergy(lten, selection=porebnd)
+
+
+// Add a boundary condition
+fn Bound(x, n) {
+    return (1-(n[2])^2)
+}
+
+var bndry = LineIntegral(Bound, nn)
+
+problem.addenergy(bndry, selection=LeftWall)
+problem.addenergy(bndry, selection=RightWall)
+
+
+// Unit vector constraint 
+var lnorm = NormSq(nn)                      
+problem.addlocalconstraint(lnorm, field=nn, target=1) 
+
+
+// Create the field optimizer
+var fopt = FieldOptimizer(problem, nn)
+fopt.stepsize = 0.01
+fopt.fix(RightWall)
+fopt.fix(LeftWall)
+// Create the shape optimizer
+var sopt = ShapeOptimizer(problem, mesh)   
+sopt.stepsize = 0.01
+sopt.fix(RightWall)
+sopt.fix(LeftWall)
+sopt.fix(LowerWall)
+sopt.fix(UpperWall)
+
+// Part 5: Regularization 
+var reg=OptimizationProblem(mesh)           // Create the Auxiliary regularization problem
+
+var leq = EquiElement()                     // Try to equalize elements
+reg.addenergy(leq)
+reg.addlocalconstraint(lcons)               // Also respect the level set constraint
+
+
+var bopt = ShapeOptimizer(reg, mesh)        // We use a separate regularization optimizer
+bopt.stepsize = 0.01
+bopt.steplimit = 0.2
+bopt.fix(inner)
+
+var ropt = ShapeOptimizer(reg, mesh)
+ropt.stepsize = 0.01
+ropt.steplimit = 0.2
+ropt.fix(bnds)
+//Visualize the initial condition
+// var nvert = Field(mesh, fn(x,y,z) Matrix([0,0,0])) // extract vertical component, plot as density
+// visverticalselected(nn, nvert, memb)
+// nvert = nvert.op(fn (n) abs(n[2]))
+// Show(plotfield(nvert, style="interpolate")) 
+
+// Matrix_Morpho2Mathematica(FieldOnLine(mesh, memb, nn, -Lregion/2, Lregion/2, 100),"theta_initial")
+    var vtkE = VTKExporter(nn)
+    vtkE.export(String("Sliceq125#0.vtk"))
+
+
+for (i in 0...30) {
+    print(String("optimizer ",i))
+    ropt.conjugategradient(15)
+    fopt.conjugategradient(10)
+    sopt.conjugategradient(5)
+    vtkE.export(String("Sliceq125#",i+1,".vtk"))
+}
+
+for (i in 0...10) {
+    fopt.conjugategradient(10)
+    sopt.conjugategradient(5)
+    vtkE.export(String("Sliceq125#",i+32,".vtk"))
+    if (sopt.hasconverged() && fopt.hasconverged()) break 
+}
+
+var Nlevels = 0
+/* Refinement */
+for (level in 1..Nlevels) {
+    var mr = MeshRefiner([mesh, nn, memb, porebnd, LeftWall, RightWall, UpperWall, LowerWall])
+    var refmap = mr.refine()
+
+    // Now refinement is done update the problems and optimizers
+    for (el in [problem, reg, sopt, fopt, ropt]) el.update(refmap)
+
+    // Update our references 
+    mesh = refmap[mesh]   // There are tidier ways to do this!
+    nn = refmap[nn]
+    porebnd = refmap[porebnd]
+    memb = refmap[memb]
+    LeftWall = refmap[LeftWall]
+    RightWall = refmap[RightWall]
+    UpperWall = refmap[UpperWall]
+    LowerWall = refmap[LowerWall]
+    // Continue optimizing. We don't need further regularization for this particular problem
+    for (i in 1..5) {                  
+        sopt.conjugategradient(10)
+        fopt.conjugategradient(10)
+        if (sopt.hasconverged() && fopt.hasconverged()) break 
+    }
+}
+
+
+var nz = Field(mesh, fn(x,y,z) Matrix([0,0,0])) // extract z component, plot as density
+visverticalselected(nn, nz, memb)
+nz = nz.op(fn (n) abs(n[2]))
+Show(plotfield(nz, style="interpolate")) 
+
+vtkE.export("SliceOfPPiRefined.vtk")
+
+
+// var ny = Field(mesh, fn(x,y,z) Matrix([0,0,0])) // extract x component, plot as density
+// visverticalselected(nn, ny, memb)
+// ny = ny.op(fn (n) abs(n[1]))
+// Show(plotfield(ny, style="interpolate")) 
+
+// var nx = Field(mesh, fn(x,y,z) Matrix([0,0,0])) // extract x component, plot as density
+// visverticalselected(nn, nx, memb)
+// nx = nx.op(fn (n) abs(n[0]))
+// Show(plotfield(nx, style="interpolate")) 
+
+// Show(plotselection(mesh,porebnd, grade = [0,1])+visdirectorselected(mesh, nn, memb, 0.05) )

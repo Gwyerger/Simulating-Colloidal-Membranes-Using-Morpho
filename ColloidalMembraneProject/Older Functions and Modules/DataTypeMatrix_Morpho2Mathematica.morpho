@@ -1,0 +1,21 @@
+fn Matrix_Morpho2Mathematica(data,str) {
+    if (ismatrix(data)){
+        print(String("\n",str," = "))
+        var size = data.dimensions()
+        print("{")
+        for (i in 0..size[0]-1){
+            if(i>0){print(",")}
+            print("{")
+            for (j in 0..size[1]-1){
+                if(j>0){print(",")}
+                print(String(data[i,j]))
+                }
+            print("}")
+            }
+        print("}\n")
+        }
+    return 
+}
+
+var da = Matrix([[1,2,3],[1,2,3],[1,2,3]])
+Matrix_Morpho2Mathematica(da,"data")

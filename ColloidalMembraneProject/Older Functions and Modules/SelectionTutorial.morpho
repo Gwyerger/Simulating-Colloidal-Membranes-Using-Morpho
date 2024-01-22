@@ -1,0 +1,23 @@
+/** Tutorial example: Nematic droplet on a substrate 
+    for DSOFT Workshop March 2023 
+    Uses Morpho 0.5.6 
+    by T. J. Atherton and the softmattertheory group at Tufts University */
+
+import meshgen 
+import plot 
+
+/* Part 1: Create and visualize the Mesh */
+var c = CircularDomain([0,0], 1)                            // The unit disk 
+var hs = HalfSpaceDomain(Matrix([0,0]), Matrix([0,1]))      // Half space below the origin
+var dom = c.difference(hs)                                  // Take the difference
+var mg = MeshGen(dom, [-1..1:0.2, -1..1:0.2], quiet=true)   // Mesh this domain
+var mesh = mg.build()                                       // Build the Mesh 
+
+/* Part 2: Create and visualize Selections */
+var bnd = Selection(mesh, boundary=true)                    // Select boundary of the mesh 
+var upper = Selection(mesh, fn (x,y) x^2+y^2>0.99)          // Select the outer boundary of the disk 
+upper.addgrade(1)                                           // Add lines (grade 1) elements to the upper selection
+var lower = Selection(mesh, fn (x,y) y<0.01)                // Select the lower boundary of the mesh 
+lower.addgrade(1)                                           // Add lines (grade 1) elements to the lower selection
+
+Show(plotselection(mesh, upper, grade=[0,1]))               // Visualize the upper selection

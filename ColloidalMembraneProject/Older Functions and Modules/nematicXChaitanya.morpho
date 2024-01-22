@@ -1,0 +1,48 @@
+import meshtools
+import optimize
+
+var m = AreaMesh(fn(u,v) [u,v,0], -1..1:0.2, -1..1:0.2)
+m.addgrade(1)
+var d = Field(m, Matrix([0,1,0]))
+
+var problem = OptimizationProblem(m)
+
+// Create functionals
+var lf=Nematic(d)
+
+lf.pitch = 5
+
+class XCompSquared {
+    init(vec) {
+        self.vec = vec
+    }
+    integrand(vec) {
+        var int = vec.op(fn (x) x[0]^2)
+        return int.linearize().transpose()
+    }
+
+    fieldgradient(vec, mesh) {
+        // print vec
+        var fg = vec.op(fn (x) Matrix([2*x[0], 0, 0]))
+        return fg
+    }
+
+    total(vec) {
+        return self.integrand(vec).sum()
+    }
+
+}
+var ln=NormSq(d)
+
+var lxcs=XCompSquared(d)
+var nx = AreaIntegral(fn (x, n) n.inner(Matrix([1,0,0]))^2, d)
+
+problem.addenergy(lf)
+problem.addlocalconstraint(ln, field=d, target=1)
+problem.addlocalconstraint(lxcs, field=d, target=0)
+// var cons = problem.addconstraint(nx)
+// cons.target = 0
+// Create shape and field optimizers
+var fopt = FieldOptimizer(problem, d)
+fopt.steplimit = 0.001
+fopt.conjugategradient(2000)

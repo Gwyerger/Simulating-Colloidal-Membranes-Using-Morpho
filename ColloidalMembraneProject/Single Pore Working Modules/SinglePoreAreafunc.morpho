@@ -16,6 +16,7 @@ var Rp = 0.5
 var gam = 1
 var dx = 0.1
 
+
 fn CreateAndSaveMesh(Lregion, Hregion, Rpore, Grain, str){
     if (Rpore > 0){
         var Rfixed = 0.5
@@ -188,7 +189,10 @@ fn lIntegrand(x){
 fn AddEdgeEnergy(problem, sel) {
     var lten = LineIntegral(lIntegrand)
     problem.addenergy(lten, selection=sel)
+}
 
+fn AddAreaCompensator(problem, R) {
+    problem.addenergy(Area(), prefactor=(-gam/R))
 }
 
 //Add Constraints and Boundary Conditions
@@ -269,9 +273,9 @@ fn Optimization(str, mesh, nn, porebnd, ropt, bopt, fopt, sopt) {
 
     var vtkE = VTKExporter(nn)
 
-    for (i in 0..30) {        
+    for (i in 0..60) {        
 
-        vtkE.export("/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research/Phase Diagram VTK Exports and PP/Single Pore/${str}_${i}.vtk")
+        vtkE.export("/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research/Phase Diagram VTK Exports and PP/Single Pore Round 3/${str}_${i}.vtk")
         
         fopt.conjugategradient(5)
         sopt.conjugategradient(3)
@@ -355,24 +359,27 @@ fn Visualization(mesh, sel, nn, nem, xcomp, ycomp, zcomp, director, energydensit
 // Perform simulations across multiple qs and line tensions
 
 var K = 1
-var C = 100
+var C = 1
 var q = 0
 var Rp = 0.5
 var gam = 0
 var dx = 0.2
 
 for(i in 1..1){
-    gam =  i*0.5
+    gam =  1
     var Hreg = 4
     var Lreg = 12
     CreateAndSaveMesh(Lreg, Hreg, Rp, dx, String("PorousMeshInitial",i))
 
+    
+
     for(j in 1..1){
         
-        q =  2
+        q =  1
 
         var vtkMI = VTKImporter(String("PorousMeshInitial", i, ".vtk"))
         var mesh = vtkMI.mesh()
+                
 
         var Selections = CreateSelections(mesh, Lreg, Hreg, Rp)
 
@@ -400,7 +407,9 @@ for(i in 1..1){
 
         AddTiltEnergy(problem, memb, nn)
 
-        AddEdgeEnergy(problem, porebnd)
+        // AddEdgeEnergy(problem, porebnd)
+
+        AddAreaCompensator(problem, 1)
 
         AddConstraints(problem, UpperWall, LowerWall, LeftWall, RightWall, nn)
 
@@ -414,7 +423,7 @@ for(i in 1..1){
        // var g = plotselection(mesh, RightWall, grade=[0,1])
        // g.title = "Iter #${k}"
        // Show(g)
-       Optimization("SinglePoreFixedC100g${i}q${j}", mesh, nn, porebnd, ropt, bopt, fopt, sopt)
+       Optimization("SinglePoreAFg${i}q${j}", mesh, nn, porebnd, ropt, bopt, fopt, sopt)
         
         /* Print Final Energy
         fopt.quiet = false

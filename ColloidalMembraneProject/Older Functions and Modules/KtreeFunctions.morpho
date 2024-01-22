@@ -1,0 +1,152 @@
+//notes
+
+import meshgen
+import meshtools
+import kdtree
+import plot
+import optimize
+import moviemaker
+
+var K = 1
+var C = 5
+var q = 2
+var gpar = 1
+var gper = 3
+
+
+// Defining a circular domain (Isotropic Fluid) with a smaller circular selection space (Colloidal Membrane): Units of length are in 10^-5 m, or 10s of microns
+var Wreg = 2
+var Hreg = 2
+var Wmem = 1
+var Hmem = 1
+
+var mesh = AreaMesh(fn (u,v) [u,v,0], -Wreg..Wreg:0.2, -Hreg..Hreg:0.2)
+
+var col = Selection(mesh, fn(x,y,z) abs(x) <= Wmem + 0.01 && abs(y) <= Hmem + 0.01 && abs(x + y) < 2*Wmem - 0.01)
+var bnd = Selection(mesh, fn(x,y,z) abs(x) <= Wmem + 0.01 && abs(y) <= Hmem + 0.01 && (abs(x) >= Wmem - 0.01 || abs(y) >= Hmem - 0.01) && abs(x + y) < 2*Wmem - 0.01)
+var inner = Selection(mesh, fn(x,y,z) abs(x) <= Wmem - 0.01 && abs(y) <= Hmem - 0.01 && abs(x + y) < 2*Wmem - 0.01)
+
+mesh.addgrade(1)
+
+col.addgrade(0)
+col.addgrade(1)
+col.addgrade(2)
+
+bnd.addgrade(0)
+bnd.addgrade(1)
+
+inner.addgrade(0)
+inner.addgrade(1)
+inner.addgrade(2)
+/*
+Show(plotselection(mesh, col, grade = [0,1]))
+Show(plotselection(mesh, bnd, grade = [0,1]))
+Show(plotselection(mesh, inner, grade = [0,1]))
+*/
+
+fn FieldOnLine(m, s, n, start, end, numpts) {
+    var N = m.count(0)
+    var pts = []
+    var ValueMatrix = Matrix(numpts+1,2)
+    for (id in 0..N-1) {
+        pts.append(m.vertexposition(id))
+    }
+    var kpts = KDTree(pts)
+    var step = (end-start)/numpts
+    for (i in 0..numpts) {
+        var pt = kpts.nearest(Matrix([i*step + start, 0,0]))
+        var nzvalue = 0
+        var Ptpos = 0
+            for (id in 0..N-1) {
+                if (pts[id] == pt.location && s.isselected(0, id)) {
+                    nzvalue = n[0,id].inner(Matrix([0,0,1]))
+                    Ptpos = pts[id].inner(Matrix([1,0,0]))
+                    break
+                }
+            }
+        ValueMatrix[i,0] = Ptpos; ValueMatrix[i,1] =  acos(nzvalue)
+    }
+    return ValueMatrix
+}
+
+fn AveragedFieldOnLine(m, n, start, end, numpts) {
+    var N = m.count(0)
+    var pts = []
+    var ValueMatrix = []
+    for (id in 0..N-1) {
+        pts.append(m.vertexposition(id))
+    }
+    var kpts = KDTree(pts)
+    var boxdim = (start-end)/numpts
+    for (i in 0..numpts) {
+        var ptsinbox = tree.search([[-boxdim+i*boxdim + start,boxdim+i*boxdim + start], [-boxdim,boxdim], [-boxdim,boxdim]])
+        var h = 0
+        var nzvalue = 0
+        for (pt in ptsinbox) {
+            for (id in 0..N-1) {
+                if (pts[id] == pt.location) {
+                    h=h+1
+                    nzvalue = nzvalue + n[0,id,2]
+                    break
+                }
+            }
+        }
+        ValueMatrix.append(Matrix([i*boxdim + start, nzvalue/h]))
+    }
+    return ValueMatrix
+}
+fn Matrix_Morpho2Mathematica(data,str) {
+    if (ismatrix(data)){
+        print(String("\n",str," = "))
+        var size = data.dimensions()
+        print("{")
+        for (i in 0..size[0]-1){
+            if(i>0){print(",")}
+            print("{")
+            for (j in 0..size[1]-1){
+                if(j>0){print(",")}
+                print(String(data[i,j]))
+                }
+            print("}")
+            }
+        print("}\n")
+        }
+    return 
+}
+
+fn FindSelectionCircle(Rad, center, Npts, m) {
+    var N = m.count(0)
+    var pts = []
+    var sel = []
+    for (id in 0..N-1) {
+        pts.append(m.vertexposition(id))
+    }
+    var kpts = KDTree(pts)
+    var ts = 2*Pi/Npts
+    For(i in 0..Npts) {
+        var X = Rad*cos(ts*i) + center[0]
+        var Y = Rad*sin(ts*i) + center[1]
+        var pt = kpts.nearest(Matrix[X, Y, 0])
+        if(sel.ismember(pt.location)==false) {sel.append(pt.location)}
+    }
+    return sel
+}
+
+
+fn FindSelectionSquare(Len, Npts, m) {
+   var N = m.count(0)
+    var pts = []
+    var sel = []
+    for (id in 0..N-1) {
+        pts.append(m.vertexposition(id))
+    }
+    var kpts = KDTree(pts)
+    var ts = 4/Npts
+    For(i in 0..Npts) {
+        var X = Len*ts*i + center[0]
+        var Y = Rad*sin(ts*i) + center[1]
+        var pt = kpts.nearest(Matrix[X, Y, 0])
+        if(sel.ismember(pt.location)==false) {sel.append(pt.location)}
+    }
+    return sel
+}

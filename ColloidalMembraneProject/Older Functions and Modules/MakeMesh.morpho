@@ -1,0 +1,35 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import vtk
+
+var Rpore = 0.5
+var Lreg = 12
+var Hreg = 2
+var Grain = 0.1
+
+
+var rect = RectangularDomain([-Lreg/2..Lreg/2, -Hreg/2..Hreg/2])
+var pore = CircularDomain(Matrix([0,0]), Rpore)
+var dom = rect.difference(pore)
+var mg = MeshGen(dom, [-Lreg/2..Lreg/2:Grain, -Hreg/2..Hreg/2:Grain])
+var mesh = mg.build()
+mesh.addgrade(1)
+var vtkME = VTKExporter(mesh)
+vtkME.export(String("SliceOfMeshMedium.vtk"))
+
+
+// var vtkMI = VTKImporter("SliceOfMesh.vtk")
+// var mesh = vtkMI.mesh()
+
+Show(plotmesh(mesh, grade=[0,1]))
+/*
+var LeftWall = Selection(mesh, fn(x,y,z) x <= -Lreg/2 + 0.01)
+var RightWall = Selection(mesh, fn(x,y,z) x >= Lreg/2 - 0.01)
+var LowerWall = Selection(mesh, fn(x,y,z) y <= -Hreg/2 + 0.01)
+var UpperWall = Selection(mesh, fn(x,y,z) y >= Hreg/2 - 0.01)
+var bnds = Selection(mesh, boundary=true)
+var inner = Selection(mesh, fn(x,y,z) abs(x)<Lreg/2 and abs(y)<Hreg/2)
+var porebnd = bnds.intersection(inner)
+Show(plotselection(mesh, porebnd, grade=0))*/

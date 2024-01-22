@@ -1,0 +1,125 @@
+/** Tutorial example: Nematic droplet on a substrate 
+    for DSOFT Workshop March 2023 
+    Uses Morpho 0.5.6 
+    by T. J. Atherton and the softmattertheory group at Tufts University */
+
+import meshgen 
+import plot 
+
+var sigma = 20      // Isotropic surface tension fluid-air
+var deltasigma = -4 // Difference between surface tension of air-substrate interface and fluid-substrate interface
+var wupper = 1      // Anchoring energy on upper surface
+var wlower = 1      // Anchoring energy on lower surface
+var k = 0.1         // Elastic constant for nematic 
+
+var Nlevels = 2     // Number of levels of refinement
+
+/* Part 1: Create and visualize the Mesh */
+var c = CircularDomain([0,0], 1)                            // The unit disk 
+var hs = HalfSpaceDomain(Matrix([0,0]), Matrix([0,1]))      // Half space below the origin
+var dom = c.difference(hs)                                  // Take the difference
+var mg = MeshGen(dom, [-1..1:0.2, -1..1:0.2], quiet=true)   // Mesh this domain
+var mesh = mg.build()                                       // Build the Mesh 
+
+/* Part 2: Create and visualize Selections */
+var bnd = Selection(mesh, boundary=true)                    // Select boundary of the mesh 
+var upper = Selection(mesh, fn (x,y) x^2+y^2>0.99)          // Select the outer boundary of the disk 
+upper.addgrade(1)                                           // Add lines (grade 1) elements to the upper selection
+var lower = Selection(mesh, fn (x,y) y<0.01)                // Select the lower boundary of the mesh 
+lower.addgrade(1)                                           // Add lines (grade 1) elements to the lower selection
+
+/* Part 3: Formulate and solve the isotropic problem */
+var problem=OptimizationProblem(mesh)                       // Create an OptimizationProblem with our mesh as the target
+
+var llength = Length()                                      // Apply an Length functional to the upper and lower boundaries 
+problem.addenergy(llength, selection=upper, prefactor=sigma) 
+problem.addenergy(llength, selection=lower, prefactor=deltasigma)  
+
+var larea = Area()                                          // Add an Area functional as a global constraint
+problem.addconstraint(larea) 
+
+var lcons = ScalarPotential(fn (x,y) y)                     // Use a local level set constraint to pin
+problem.addlocalconstraint(lcons, selection=lower)          // the lower vertices to the substrate
+
+// Now to solve it 
+var opt = ShapeOptimizer(problem, mesh)                     // Create the ShapeOptimizer
+opt.conjugategradient(500)                                  // Perform conjugate gradient
+
+/* Part 4: Now add in and solve the nematic problem */
+var nn = Field(mesh, Matrix([1,0,0]))                       // Create the director field 
+
+// Helper function to visualize the director field 
+fn visdirector(m, n, scale) {
+    var g = Graphics() 
+    for (id in 0...m.count()) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+
+// Now add the nematic terms into the problem 
+var lnem = Nematic(nn)                      // Create and add in nematic elasticity 
+problem.addenergy(lnem, prefactor = k) 
+
+fn anchintegrand(x, n) { // Integrand for anchoring energy 
+    var t = tangent()    // Gets the local tangent vector 
+    return (n[0]*t[0]+n[1]*t[1])^2
+}
+
+var lanch = LineIntegral(anchintegrand, nn) // Anisotopic surface tension (anchoring)
+problem.addenergy(lanch, selection=lower, prefactor=-wupper) 
+problem.addenergy(lanch, selection=upper, prefactor=-wlower) 
+
+var lnorm = NormSq(nn)                      // Unit vector constraint 
+problem.addlocalconstraint(lnorm, field=nn, target=1) 
+
+var fopt = FieldOptimizer(problem, nn)      // Create the Field Optimizer
+fopt.steplimit = 0.1                        // Prevent field optimizer from going too far off constraint space
+
+/* Part 5: Regularization */
+var reg=OptimizationProblem(mesh)           // Create the Auxiliary regularization problem
+
+var leq = EquiElement()                     // Try to equalize elements
+reg.addenergy(leq)
+reg.addlocalconstraint(lcons, selection=lower) // Also respect the level set constraint
+
+var ropt = ShapeOptimizer(reg, mesh)        // We use a separate regularization optimizer
+ropt.stepsize = 0.001
+ropt.fix(upper)
+
+for (i in 1..30) {                  // Alternating optimization scheme for Shape and Field with Regularization
+    opt.conjugategradient(10)
+    fopt.conjugategradient(10)
+    if (opt.hasconverged() && fopt.hasconverged()) break 
+    ropt.relax(5)
+    equiangulate(mesh)
+}
+
+/* Part 6: Refinement */
+for (level in 1..Nlevels) {
+    var mr = MeshRefiner([mesh, nn, bnd, upper, lower])
+    var refmap = mr.refine(selection = upper)
+
+    // Now refinement is done update the problems and optimizers
+    for (el in [problem, reg, opt, fopt, ropt]) el.update(refmap)
+
+    // Update our references 
+    mesh = refmap[mesh]   // There are tidier ways to do this!
+    nn = refmap[nn]
+    bnd = refmap[bnd]
+    lower = refmap[lower]
+    upper = refmap[upper]
+
+    // Continue optimizing. We don't need further regularization for this particular problem
+    for (i in 1..100) {                  
+        opt.conjugategradient(10)
+        fopt.conjugategradient(10)
+        if (opt.hasconverged() && fopt.hasconverged()) break 
+    }
+}
+
+// Visualize 
+Show(plotselection(mesh,bnd, grade=[1])+visdirector(mesh, nn, 0.025))

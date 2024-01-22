@@ -1,0 +1,118 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import moviemaker
+import vtk
+import functionals
+
+var Rout = 1.5
+var Rin = 0.5
+var dx = 0.1
+var C = 1
+var K = 1
+var q = 10
+
+//Visualize Function
+fn visverticalselected(n, nz, s) {
+    var points = s.idlistforgrade(0)
+    for (id in points) {
+        nz[0,id] =n[0,id]         // Get the corresponding director  
+    }
+    return 
+} 
+fn visdirector(m, n, scale) {
+    var g = Graphics() 
+    for (id in 0...m.count()) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+
+var CircleA = CircularDomain(Matrix([0,0]), Rout)
+var CircleB = CircularDomain(Matrix([0,0]), Rin)
+var CCircles = CircleA.difference(CircleB)
+var MG = MeshGen(CCircles, [-Rout..Rout:dx, -Rout..Rout:dx], quiet = false)
+var Meshe = MG.build()
+var Mesh = ChangeMeshDimension(Meshe, 3)
+Mesh.addgrade(1)
+Mesh.addgrade(2)
+// Show(plotmesh(Mesh, grade = [0,1,2]))
+
+var bndry = Selection(Mesh, boundary = true)
+bndry.addgrade(0)
+bndry.addgrade(1)
+bndry.addgrade(2)
+
+var Sel = Selection(Mesh, fn(x,y,z) x^2+y^2-(1.5*Rin)^2<0)
+Sel.addgrade(2)
+for (id in Sel.idlistforgrade(2)){
+    if (id > 340){Sel[2, id] = false}
+}
+
+
+
+var memb = Selection(Mesh, fn (x, y, z) x^2 + y^2 < Rout^2 + 0.02)
+
+
+Show(plotselection(Mesh, Sel, grade = [0, 1, 2]))
+
+
+var nn = Field(Mesh, fn(x,y,z) Matrix([0,sin(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(Rout*sqrt(C/K))),cos(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(Rout*sqrt(C/K)))])) 
+var nem = Nematic(nn, ksplay = K, ktwist = K, kbend = K, pitch = q)
+
+fn lIntegrand(x){
+    return (1)
+}
+var lint = LineIntegral(lIntegrand)
+
+var problem = OptimizationProblem(Mesh)
+problem.addenergy(nem, selection = memb)
+var lnorm = NormSq(nn)                      
+problem.addlocalconstraint(lnorm, field=nn, target=1) 
+var lcons = ScalarPotential(fn (x,y,z) z)    
+problem.addlocalconstraint(lcons)
+var larea = Area()
+problem.addconstraint(larea)
+var fopt = FieldOptimizer(problem, nn)
+problem.addenergy(lint, selection = bndry)
+var sopt = ShapeOptimizer(problem, Mesh)
+
+var reg=OptimizationProblem(Mesh)           // Create the Auxiliary regularization problem
+
+var leq = EquiElement()                     // Try to equalize elements
+reg.addenergy(leq, prefactor = 1)
+reg.addlocalconstraint(lcons)               // Also respect the level set constraint
+
+var ropt = ShapeOptimizer(reg, Mesh)
+ropt.stepsize = 0.01
+ropt.steplimit = 0.1
+ropt.quiet=true
+ropt.fix(bndry)
+ropt.unfix(bndry)
+
+var mp = MeshPruner([Mesh, nn, bndry, memb])
+var refmap = mp.prune(Sel)
+problem.update(refmap)
+reg.update(refmap)
+fopt.update(refmap)
+sopt.update(refmap)
+ropt.update(refmap)
+Mesh = refmap[Mesh]
+nn = refmap[nn]
+bndry = refmap[bndry]
+memb = refmap[memb]
+
+ropt.fix(bndry)
+Show(plotmesh(Mesh, grade = [0, 1, 2]))
+
+
+fopt.conjugategradient(50)
+sopt.conjugategradient(50)
+ropt.conjugategradient(10)
+
+Show(plotmesh(Mesh, grade = [0,1])+visdirector(Mesh, nn, 0.05) )
+
