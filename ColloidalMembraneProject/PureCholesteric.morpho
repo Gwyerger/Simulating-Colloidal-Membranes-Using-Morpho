@@ -1,0 +1,106 @@
+//   K( (∇.n)^2 + (n.∇xn - q)^2 + (nx∇xn)^2 ) + C( 1-(n.z)^2 )
+
+import meshgen
+import meshtools
+import kdtree
+import plot
+import optimize
+import moviemaker
+import vtk
+
+var K = 1
+var q = 0
+    
+var pathexport = "/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research/Pure Cholesteric/Rectangular Region/"
+var str = "testingCholestericK${K}q${q}"
+
+var Wreg = 6
+var Hreg = 4
+var Wmem = 6
+var Hmem = 4
+var dx = 0.2
+
+var mesh = AreaMesh(fn (u,v) [u,v,0], -Wreg..Wreg:dx, -Hreg..Hreg:dx)
+
+var bnd = Selection(mesh, boundary=true)
+var leftwall = Selection(mesh, fn(x,y,z) x <= -(Wmem - dx/2)).intersection(bnd)
+var rightwall = Selection(mesh, fn (x,y,z) x >= (Wmem - dx/2)).intersection(bnd)
+mesh.addgrade(1)
+
+// For restricting the z-component locally
+class ZCompSquared {
+    init(vec) {
+        self.vec = vec
+    }
+    integrand(vec) {
+        var int = vec.op(fn (x) x[2]^2)
+        return int.linearize().transpose()
+    }
+
+    fieldgradient(vec, mesh) {
+        // print vec
+        var fg = vec.op(fn (x) Matrix([0, 0, 2*x[2]]))
+        return fg
+    }
+
+    total(vec) {
+        return self.integrand(vec).sum()
+    }
+}
+
+//Initialize a random field
+// var nn = Field(mesh, fn(x,y,z) Matrix([0,sin(q*x),cos(q*x)]))  
+var nn = Field(mesh, fn(x,y,z) Matrix([2*(1/2 - random()),2*(1/2 - random()),0]))  
+
+var zcomp = ZCompSquared(nn)
+
+ // Create an OptimizationProblem with our mesh as the target
+var problem=OptimizationProblem(mesh) 
+
+// Add a nematic energy functional 
+var nem = Nematic(nn, ksplay = K, ktwist = K, kbend = K, pitch = q)
+problem.addenergy(nem) 
+problem.addlocalconstraint(zcomp, field = nn, target = 0)
+
+// Unit vector constraint 
+var lnorm = NormSq(nn)                      
+problem.addlocalconstraint(lnorm, field=nn, target=1) 
+
+
+
+// Create the field optimizer
+var fopt = FieldOptimizer(problem, nn)
+// fopt.stepsize = 0.01
+// fopt.steplimit = 0.2
+
+var vtkE = VTKExporter(nn)
+
+for (i in 0...150) {
+    print(String("field optimizer ",i))
+    fopt.relax(5)
+    fopt.linesearch(10)
+    vtkE.export("${pathexport}${str}_${i}.vtk")
+}
+
+// var Nlevels = 0
+// /* Part 6: Refinement */
+// for (level in 1..Nlevels) {
+//     var mr = MeshRefiner([mesh, nn, col, bnd, leftwall])
+//     var refmap = mr.refine()
+
+//     // Now refinement is done update the problems and optimizers
+//     for (el in [problem, reg, sopt, fopt, ropt]) el.update(refmap)
+
+//     // Update our references 
+//     mesh = refmap[mesh]   // There are tidier ways to do this!
+//     nn = refmap[nn]
+//     bnd = refmap[bnd]
+//     col = refmap[col]
+//     leftwall = refmap[leftwall]
+
+//     // Continue optimizing. We don't need further regularization for this particular problem
+//     for (i in 1..10) {                  
+//         fopt.conjugategradient(10)
+//         if (fopt.hasconverged()) break 
+//     }
+// }

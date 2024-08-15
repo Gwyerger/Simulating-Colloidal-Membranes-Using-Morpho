@@ -1,0 +1,247 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import vtk
+import functionals
+
+
+
+var pathexport = "/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research//Coalescing Membrane/VTK Files/"
+var pathenergies = "/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research//Coalescing Membrane/VTK Files/"
+
+
+fn modulus(a, b){
+    return (a/b - floor(a/b))*b
+}
+
+fn CreateAndSaveMesh(D, R, Grain, str){
+    var memb1 = CircularDomain(Matrix([D/2,0]), R)
+    var memb2 = CircularDomain(Matrix([-D/2,0]), R)
+    var memb = memb1.union(memb2)
+    var mg = MeshGen(memb, [(-D/2 - R)..(D/2 + R):Grain, -R..R:Grain], quiet=false)
+    var meshe = mg.build()
+    var mesh = ChangeMeshDimension(meshe, 3)
+    mesh.addgrade(1)
+    mesh.addgrade(2)
+    var vtkME = VTKExporter(mesh)
+    vtkME.export(String(pathexport, str,".vtk"))
+    print(String("Coalescing Membrane mesh created and exported as ",str,".vtk"))
+    var vtkMI = VTKImporter(String(pathexport, str,".vtk"))
+    var mesh = vtkMI.mesh()
+    return mesh
+}
+
+fn CreateSelections(mesh, Grain) {
+    var dx = Grain
+    var bnds = Selection(mesh, boundary=true)
+    bnds.addgrade(0)
+    // var porebnd = bnds.intersection(inner)
+    // var notporebnd = Selection(mesh, fn(x,y,z) sqrt(x^2 + y^2) > Rpore+0.5*dx)
+    // porebnd.addgrade(1)
+    bnds.addgrade(1)
+    return [bnds]
+}
+
+fn EnergiesToFile(path, str, sopt, fopt) {
+    var sonum = Matrix(sopt.energy).dimensions()[0]-1
+    var fonum = Matrix(fopt.energy).dimensions()[0]-1
+    var fs = File("${path}${str}sopt.txt", "w")
+    for (i in 0..sonum) fs.write("${sopt.energy[i]}")
+    var ff = File("${path}${str}fopt.txt", "w")
+    for (i in 0..fonum) ff.write("${fopt.energy[i]}")
+    fs.close()
+    ff.close()
+}
+
+fn ListToFile(str, list){
+    var f = File("${pathexport}${str}.txt", "w")
+    for (dat in list) f.write(dat)
+    f.close()
+}
+
+
+ // //Initialize a field
+fn AddNematicFieldEnergy(mesh, problem, D, Ksplay, Ktwist, Kbend, q, C) {
+    var K = Ktwist
+    var nn = Field(mesh, fn(x,y,z) Matrix([0,sin(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(D/2*sqrt(C/K))),cos(Pi/2 + Pi/2*arctan(x*sqrt(C/K))/arctan(D/2*sqrt(C/K)))])) 
+    var nem = Nematic(nn, ksplay = Ksplay, ktwist = Ktwist, kbend = Kbend, pitch = q)
+    problem.addenergy(nem)
+    return [nn, nem]
+}
+
+
+// Add a tilt energy functional C/2*sin^2(theta)
+fn tIntegrand(x, n) {                   
+    return (1-(n[2])^2)
+}
+
+
+fn AddTiltEnergy(problem, nn, C) {
+    var tilt = AreaIntegral(tIntegrand, nn) 
+    problem.addenergy(tilt, prefactor = C/2)
+}
+
+// Add a line tension functional
+fn lIntegrand(x, n) {
+    var t = tangent()
+    var lt = (t.inner(n))^2
+    var lp  = 1-lt
+    return (1/2*lt + lp)
+}
+fn AddEdgeEnergy(problem, sel, nn, g) {
+    var lten = LineIntegral(lIntegrand, nn)
+    problem.addenergy(lten, selection=sel, prefactor = g)
+}
+
+
+
+fn AddConstraints(problem, reg, nn) {
+    // Add a level set to keep things in the z axis
+    var lcons = ScalarPotential(fn (x,y,z) z)    
+    problem.addlocalconstraint(lcons)
+    reg.addlocalconstraint(lcons)   
+    var A = Area()
+    problem.addconstraint(A)
+    reg.addconstraint(A)
+    // Unit vector constraint 
+    var lnorm = NormSq(nn)                      
+    problem.addlocalconstraint(lnorm, field=nn, target=1) 
+}
+
+fn CreateOptimizers(problem, reg,  mesh, nn) {
+
+    // Create the field optimizer
+    var fopt = FieldOptimizer(problem, nn)
+    fopt.stepsize = 0.01
+    fopt.quiet = true
+    fopt.etol = 1e-6
+    var sopt = ShapeOptimizer(problem, mesh)   
+
+    sopt.quiet = true
+    sopt.stepsize = 0.001
+    sopt.steplimit = 0.01
+    sopt.etol = 1e-7
+    
+    var leq = EquiElement()                     // Try to equalize elements
+    reg.addenergy(leq, prefactor = 1)         
+
+    var ropt = ShapeOptimizer(reg, mesh)
+    ropt.stepsize = 0.001
+    ropt.steplimit = 0.005
+    ropt.quiet=true
+
+    return [fopt, sopt, ropt, reg]
+}
+
+fn Optimization(str, mesh, nn, ropt, fopt, sopt) {
+    print(String("Optimizing mesh and exporting with batch name ", str))
+    var iterations = 500
+    var vtkE = VTKExporter(nn)
+    var h = 0
+    vtkE.export("${pathexport}${str}_${h}.vtk")
+    var Break = false
+    for (i in 0..iterations) {
+        if (i < 200){
+            try{
+            fopt.conjugategradient(3)
+            sopt.conjugategradient(3)
+            } catch{"MtrxSnglr": Break = true}
+            if (Break) break
+            if (Int(modulus(i, 3))==0) {
+                ropt.conjugategradient(3)
+                if (i < 100) {
+                    equiangulate(mesh, quiet=true)
+                    ropt.conjugategradient(3)
+                }
+            }
+            h=h+1
+            if (Int(modulus(i, 5))==0) {
+                vtkE.export("${pathexport}${str}_${h}.vtk")
+                print("${i}/${iterations}")
+            }
+        }        
+        else {
+            try{
+            fopt.linesearch(5)
+            sopt.linesearch(5)
+            } catch{"MtrxSnglr": Break = true}
+            if (Break) break
+            if (sopt.hasconverged() && fopt.hasconverged()) {
+                break
+            }
+            h=h+1
+            if (Int(modulus(i, 5))==0) {
+                vtkE.export("${pathexport}${str}_${h}.vtk")
+                print("${i}/${iterations}")
+            }
+        }
+        var sonum = Matrix(sopt.energy).dimensions()[0]-1
+        var fonum = Matrix(fopt.energy).dimensions()[0]-1
+
+        if(abs(sopt.energy[sonum]) > abs(sopt.energy[0]*100) or abs(fopt.energy[fonum]) > abs(fopt.energy[0]*100)) {
+            print("Mesh Degradation")
+            break
+        }
+        print("sopt step: ${sopt.energy[sonum]-sopt.energy[sonum-1]}, fopt step: ${fopt.energy[fonum]-fopt.energy[fonum-1]}")
+    }
+}
+
+
+fn Refinement(str, mesh, nn, porebnd, problem, reg, sopt, fopt, ropt, Nlevels) {
+    var vtkE = VTKExporter(nn)
+    /* Refinement */
+    for (level in 1..Nlevels) {
+        var mr = MeshRefiner([mesh, nn, porebnd])
+        var refmap = mr.refine()
+
+        // Now refinement is done update the problems and optimizers
+        for (el in [problem, reg, sopt, fopt, ropt]) el.update(refmap)
+
+        // Update our references 
+        mesh = refmap[mesh]   // There are tidier ways to do this!
+        nn = refmap[nn]
+        porebnd = refmap[porebnd]
+        
+        // Continue optimizing. We don't need further regularization for this particular problem
+        for (i in 1..5) {                  
+            sopt.conjugategradient(10)
+            fopt.conjugategradient(10)
+            if (sopt.hasconverged() && fopt.hasconverged()) break 
+        }
+        vtkE.export(String(str, "Refined",level,".vtk"))
+    }
+}
+
+// Perform simulations across multiple qs and line tensions
+
+var K = 1
+// var Ksplay = 1
+// var Kbend = 1
+// var Ktwist = 1
+var C = 10
+var q = 1
+// var Rp = 0.75
+var gam = 2
+var dx = 0.2
+var R = 5
+var D = 8
+// var Np = 4
+
+var mesh = CreateAndSaveMesh(D, R, dx, String("CoalescingInitial"))
+Show(plotmesh(mesh, grade = [0,1,2]))
+
+var Selections = CreateSelections(mesh, dx)
+var bnd = Selections[0]
+var problem = OptimizationProblem(mesh)
+var reg = OptimizationProblem(mesh) 
+var fe = AddNematicFieldEnergy(mesh, problem, D/2+R, K, K, K, q, C)
+var nn = fe[0], nem = fe[1]
+AddTiltEnergy(problem, nn, C)
+AddEdgeEnergy(problem, bnd, nn, gam)
+AddConstraints(problem, reg, nn)
+var Optimizers = CreateOptimizers(problem, reg, mesh, nn)
+var fopt = Optimizers[0], sopt = Optimizers[1], ropt = Optimizers[2]
+var str = "Coalescingg${gam}q${q}C${C}"
+Optimization(str, mesh, nn, ropt, fopt, sopt)
+EnergiesToFile(pathenergies, "Energies4Itg${gam}q${q}C${C}", sopt, fopt)

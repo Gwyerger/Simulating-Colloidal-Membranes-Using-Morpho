@@ -1,0 +1,187 @@
+import meshgen
+import meshtools
+import plot
+import optimize
+import moviemaker
+import vtk
+import functionals
+
+// This code creates and optimizes the 2D annulus. Given one radii, calculating the other radii for a fixed area.
+
+var K = 1
+var C = 1
+var q = 0
+var dx = 0.2
+var Ar = Pi*8
+var R = 3
+var r = sqrt((Pi*R^2 - Ar)/Pi) 
+
+
+// Helper functions to visualize the director field 
+fn visdirector(m, n, scale) {
+    var g = Graphics() 
+    for (id in 0...m.count()) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+fn visdirectorselected(m, n, s, scale) {
+    var g = Graphics() 
+    var points = s.idlistforgrade(0)
+    for (id in points) {
+        var x = m.vertexposition(id)        // Get vertex id's position 
+        var xx = Matrix([x[0], x[1], 0])    // Promote it to a 3D vector 
+        var nn =n[0,id]                     // Get the corresponding director 
+        g.display(Cylinder(xx-scale*nn, xx+scale*nn, aspectratio=0.2, color=White)) 
+    }
+    return g
+} 
+
+fn visverticalselected(n, nz, s) {
+    var points = s.idlistforgrade(0)
+    for (id in points) {
+        nz[0,id] =n[0,id]         // Get the corresponding director  
+    }
+    return 
+} 
+
+class Visualizer {
+    init(mesh) {
+        self.mesh = mesh
+    }
+    showXcomp(nn, sel){
+        var nx = Field(self.mesh, fn(x,y,z) Matrix([0,0,0])) // extract x component, plot as density
+        visverticalselected(nn, nx, sel)
+        nx = nx.op(fn (n) abs(n[0]))
+        Show(plotfield(nx, style="interpolate")) 
+    }
+
+    showYcomp(nn, sel){
+        var ny = Field(self.mesh, fn(x,y,z) Matrix([0,0,0])) // extract x component, plot as density 
+        visverticalselected(nn, ny, sel)
+        ny = ny.op(fn (n) abs(n[1]))
+        Show(plotfield(ny, style="interpolate")) 
+    }
+
+    showZcomp(nn, sel){
+        var nz = Field(self.mesh, fn(x,y,z) Matrix([0,0,0])) // extract z component, plot as density
+        visverticalselected(nn, nz, sel)
+        nz = nz.op(fn (n) abs(n[2]))
+        Show(plotfield(nz, style="interpolate")) 
+    }
+
+    showRods(nn){
+        Show(plotmesh(self.mesh, grade = [0,1])+visdirector(self.mesh, nn, 0.05) )
+    }
+    showEnergyDensity(nem){
+        var NemEnDen = nem.integrand(self.mesh)
+        var NemEnDenField = Field(self.mesh,grade = 2)
+        for (i in 0...self.mesh.count(2)) {
+            NemEnDenField[2,i] = NemEnDen[0,i]
+        }
+        Show(plotfield(NemEnDenField))
+    }
+}
+
+fn modulus(a, b){
+    return (a/b - floor(a/b))*b
+}
+
+// Making the Mesh
+fn CreateAndSaveMesh(R, r, Grain, str){
+    if (r > 0){
+        var circlea = CircularDomain(Matrix([0,0]), R)
+        var circleb = CircularDomain(Matrix([0,0]), r)
+        var ring = circlea.difference(circleb)
+        var mb = MeshGen(ring, [-R..R:Grain, -R..R:Grain] , quiet=true)
+        var meshe = mb.build()
+        var mesh = ChangeMeshDimension(meshe, 3)
+        mesh.addgrade(1)
+        mesh.addgrade(2)
+        var vtkME = VTKExporter(mesh)
+        vtkME.export(String(str,".vtk"))
+        Show(plotmesh(mesh, grade=[0,1,2]))
+        print(String("Annular mesh created and exported as ",str,".vtk"))
+        return mesh
+    }
+}
+
+ // //Initialize a field
+fn AddNematicFieldEnergy(mesh, problem, IC) {
+    var nn
+    if (IC == "random") {
+    nn = Field(mesh, fn(x,y,z) Matrix([cos(2*Pi*random()),cos(2*Pi*random()),cos(2*Pi*random())])) 
+    }
+    if (IC == "radial") {
+    nn = Field(mesh, fn(x,y,z) Matrix([x/(x^2+y^2), y/(x^2+y^2), 0])) 
+    }
+    if (IC == "uniform"){
+    nn = Field(mesh, fn(x,y,z) Matrix([0, 0, 1])) 
+    }
+    var nem = Nematic(nn, ksplay = K, ktwist = K, kbend = K, pitch = q)
+    problem.addenergy(nem)
+    return [nn, nem]
+}
+
+// Add a tilt energy functional C/2*sin^2(theta)
+fn tIntegrand(x, n) {                   
+    return C/2*(1-(n[2])^2)
+}
+
+fn AddTiltEnergy(problem, nn) {
+    var tilt = AreaIntegral(tIntegrand, nn) 
+    problem.addenergy(tilt)
+}
+
+fn AddConstraints(problem, reg, nn, R) {
+    var lnorm = NormSq(nn)                      
+    problem.addlocalconstraint(lnorm, field=nn, target=1) 
+    var lcons = ScalarPotential(fn (x,y,z) (x^2 + y^2 - R^2))  
+    reg.addlocalconstraint(lcons)     
+}
+
+fn CreateOptimizers(problem, reg, mesh, nn) {
+    // Create the field optimizer
+    var fopt = FieldOptimizer(problem, nn)
+    fopt.stepsize = 0.001
+    fopt.quiet = true
+    var leq = EquiElement()                     // Try to equalize elements
+    reg.addenergy(leq, prefactor = 1)
+    var ropt = ShapeOptimizer(reg, mesh)
+    ropt.quiet = true
+    return [fopt, ropt]
+}
+
+fn Optimization(str, mesh, nn, fopt) {
+
+    print(String("Optimizing mesh and exporting with batch name ", str))
+    var vtkE = VTKExporter(nn)
+    var h = 0
+    var run = 60
+    for (i in 0..run) {        
+        if (modulus(i, 2)==0) {
+        vtkE.export("/mnt/c/Users/gabey/OneDrive/Desktop/Fall 2023/SM Research/Cylinder Stuff/VTKs/${str}_${h}.vtk")
+        print(String(h, "/", run/2))
+        h = h+1
+        }
+        fopt.relax(4)
+        fopt.conjugategradient(6)
+    }
+}
+
+CreateAndSaveMesh(R, r, dx, String("AnnulusR",R,"r",r))
+var vtkMI = VTKImporter(String("AnnulusR",R,"r",r,".vtk"))
+var mesh = vtkMI.mesh()
+var problem = OptimizationProblem(mesh)
+var reg = OptimizationProblem(mesh)           // Create the Auxiliary regularization problem (unused)
+var fe = AddNematicFieldEnergy(mesh, problem, "uniform")
+var nn = fe[0]
+var nem = fe[1]
+AddTiltEnergy(problem, nn)
+AddConstraints(problem, reg, nn, R)
+var opts = CreateOptimizers(problem, reg, mesh, nn)
+var fopt = opts[0]
+Optimization(String("AnnulusR",R, "r",r,"q",0) , mesh, nn, fopt)
